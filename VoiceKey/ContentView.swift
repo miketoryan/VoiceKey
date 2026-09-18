@@ -30,7 +30,7 @@ struct ContentView: View {
                         Text("Status")
                         Spacer()
                         Text(model.serviceReady ? "Ready" : "Stopped")
-                            .foregroundStyle(model.serviceReady ? .green : .secondary)
+                            .foregroundStyle(model.serviceReady ? Color.green : Color.secondary)
                     }
 
                     Text(model.statusText)
