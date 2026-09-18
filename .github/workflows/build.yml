@@ -65,6 +65,16 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$KEYBOARD_PLIST")" = "com.apple.keyboard-service"
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:RequestsOpenAccess' "$KEYBOARD_PLIST")" = "true"
 
+      - name: Add ad-hoc signature skeleton for Sideloadly
+        run: |
+          APP_PATH="$RUNNER_TEMP/VoiceKey.xcarchive/Products/Applications/VoiceKey.app"
+          KEYBOARD_PATH="$APP_PATH/PlugIns/VoiceKeyKeyboard.appex"
+
+          codesign --force --sign - --timestamp=none "$KEYBOARD_PATH"
+          codesign --force --sign - --timestamp=none "$APP_PATH"
+          codesign --verify --strict "$KEYBOARD_PATH"
+          codesign --verify --strict "$APP_PATH"
+
       - name: Package IPA for Sideloadly
         run: |
           APP_PATH="$RUNNER_TEMP/VoiceKey.xcarchive/Products/Applications/VoiceKey.app"
