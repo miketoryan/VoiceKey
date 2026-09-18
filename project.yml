@@ -47,7 +47,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.miketoryan.VoiceKey.Keyboard
-        PRODUCT_NAME: VoiceKey
+        PRODUCT_NAME: VoiceKeyKeyboard
         INFOPLIST_FILE: VoiceKeyKeyboard/Info.plist
         CODE_SIGN_ENTITLEMENTS: VoiceKeyKeyboard/VoiceKeyKeyboard.entitlements
         GENERATE_INFOPLIST_FILE: NO
