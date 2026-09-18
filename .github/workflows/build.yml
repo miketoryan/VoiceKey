@@ -55,6 +55,16 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             archive
 
+      - name: Validate packaged app metadata
+        run: |
+          APP_PATH="$RUNNER_TEMP/VoiceKey.xcarchive/Products/Applications/VoiceKey.app"
+          APP_PLIST="$APP_PATH/Info.plist"
+          KEYBOARD_PLIST="$APP_PATH/PlugIns/VoiceKeyKeyboard.appex/Info.plist"
+
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$APP_PLIST")" != ""
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$KEYBOARD_PLIST")" = "com.apple.keyboard-service"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:RequestsOpenAccess' "$KEYBOARD_PLIST")" = "true"
+
       - name: Package IPA for Sideloadly
         run: |
           APP_PATH="$RUNNER_TEMP/VoiceKey.xcarchive/Products/Applications/VoiceKey.app"
