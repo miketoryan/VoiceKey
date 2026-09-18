@@ -19,8 +19,6 @@ targets:
     sources:
       - path: VoiceKey
       - path: Shared
-    info:
-      path: VoiceKey/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.miketoryan.VoiceKey
@@ -37,8 +35,6 @@ targets:
     sources:
       - path: VoiceKeyKeyboard
       - path: Shared
-    info:
-      path: VoiceKeyKeyboard/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.miketoryan.VoiceKey.Keyboard
