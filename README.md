@@ -15,7 +15,7 @@ The ChatGPT/Codex transcription endpoint used by this project is an undocumented
 
 The containing app records on behalf of the keyboard because iOS keyboard extensions cannot access the microphone directly. Recordings have no fixed duration limit and are uploaded through a temporary multipart file instead of being copied fully into memory. While visible, the keyboard sends a heartbeat every 2 seconds. When those heartbeats stop because the keyboard was dismissed, switched, or terminated, the app closes the microphone after a 10-second grace period.
 
-After the microphone closes, VoiceKey plays a silent background audio loop to keep its localhost bridge available. Switching back to the VoiceKey keyboard automatically reactivates the microphone. This personal-use workaround may consume a small amount of battery and may appear as audio activity in iOS. The service normally needs to be started only once after installation, a phone restart, a force-quit, or if iOS terminates the app.
+After the microphone closes, VoiceKey attempts to keep its localhost bridge available with a silent background audio loop. On current iOS versions the containing app may still be suspended, so switching back to the VoiceKey keyboard does not always reactivate the microphone. If that happens, reopen VoiceKey and tap **Start Keyboard Service** before recording again. This is a known limitation of the free-account, personal-use build.
 
 ## Build
 
@@ -32,12 +32,12 @@ For a local Xcode build, install Xcode 26+ and XcodeGen, run `xcodegen generate`
 
 ## Usage
 
-1. Open VoiceKey once and tap **Start Keyboard Service**. It then reactivates automatically whenever the VoiceKey keyboard appears.
+1. Open VoiceKey and tap **Start Keyboard Service** before using the keyboard. If the microphone has already closed after leaving the keyboard, return to VoiceKey and start the service again.
 2. In Settings → General → Keyboard → Keyboards, add VoiceKey and enable **Allow Full Access**. Localhost communication does not work without Full Access.
 3. Switch to VoiceKey from the globe key in any app.
 4. Tap the microphone to start.
 5. Tap stop to transcribe. The result is inserted automatically only while the same keyboard session remains active; otherwise VoiceKey asks you to tap **Insert Result** so stale text is not inserted into the wrong field.
-6. Use the globe key to return to Apple Keyboard. The microphone closes about 10 seconds later while the silent standby session remains available for automatic reactivation.
+6. Use the globe key to return to Apple Keyboard. The microphone closes about 10 seconds later. Depending on iOS background suspension, VoiceKey may need to be reopened and started again before the next recording.
 
 ## Status
 
