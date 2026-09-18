@@ -42,7 +42,8 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     deinit {
-        stopBridgeTasks()
+        heartbeatTask?.cancel()
+        pollingTask?.cancel()
         commandTask?.cancel()
     }
 
