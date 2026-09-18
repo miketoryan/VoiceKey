@@ -75,10 +75,10 @@ enum SharedBridge {
 private let darwinCallback: CFNotificationCallback = { _, observer, name, _, _ in
     guard let observer, let name else { return }
     let bus = Unmanaged<DarwinBus>.fromOpaque(observer).takeUnretainedValue()
-    bus.deliver(name.rawValue as String)
+    bus.deliver(name as String)
 }
 
-final class DarwinBus {
+final class DarwinBus: @unchecked Sendable {
     static let shared = DarwinBus()
 
     private let center = CFNotificationCenterGetDarwinNotifyCenter()
