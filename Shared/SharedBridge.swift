@@ -72,10 +72,19 @@ enum SharedBridge {
     }
 }
 
-private let darwinCallback: CFNotificationCallback = { _, observer, name, _, _ in
-    guard let observer, let name else { return }
-    let bus = Unmanaged<DarwinBus>.fromOpaque(observer).takeUnretainedValue()
-    bus.deliver(name as String)
+private final class DarwinToken: @unchecked Sendable {
+    let id = UUID()
+    let handler: () -> Void
+
+    init(handler: @escaping () -> Void) {
+        self.handler = handler
+    }
+}
+
+private let darwinCallback: CFNotificationCallback = { _, observer, _, _, _ in
+    guard let observer else { return }
+    let token = Unmanaged<DarwinToken>.fromOpaque(observer).takeUnretainedValue()
+    token.handler()
 }
 
 final class DarwinBus: @unchecked Sendable {
@@ -83,38 +92,41 @@ final class DarwinBus: @unchecked Sendable {
 
     private let center = CFNotificationCenterGetDarwinNotifyCenter()
     private let lock = NSLock()
-    private var handlers: [String: [UUID: () -> Void]] = [:]
-    private var registeredNames = Set<String>()
+    private var tokens: [UUID: DarwinToken] = [:]
 
     private init() {}
 
     @discardableResult
     func observe(_ name: String, handler: @escaping () -> Void) -> UUID {
-        let id = UUID()
+        let token = DarwinToken(handler: handler)
+
         lock.lock()
-        handlers[name, default: [:]][id] = handler
-        let shouldRegister = registeredNames.insert(name).inserted
+        tokens[token.id] = token
         lock.unlock()
 
-        if shouldRegister {
-            CFNotificationCenterAddObserver(
-                center,
-                Unmanaged.passUnretained(self).toOpaque(),
-                darwinCallback,
-                name as CFString,
-                nil,
-                .deliverImmediately
-            )
-        }
-        return id
+        CFNotificationCenterAddObserver(
+            center,
+            Unmanaged.passUnretained(token).toOpaque(),
+            darwinCallback,
+            name as CFString,
+            nil,
+            .deliverImmediately
+        )
+        return token.id
     }
 
     func remove(_ id: UUID) {
         lock.lock()
-        for name in handlers.keys {
-            handlers[name]?[id] = nil
-        }
+        let token = tokens.removeValue(forKey: id)
         lock.unlock()
+
+        guard let token else { return }
+        CFNotificationCenterRemoveObserver(
+            center,
+            Unmanaged.passUnretained(token).toOpaque(),
+            nil,
+            nil
+        )
     }
 
     func post(_ name: String) {
@@ -125,12 +137,5 @@ final class DarwinBus: @unchecked Sendable {
             nil,
             true
         )
-    }
-
-    fileprivate func deliver(_ name: String) {
-        lock.lock()
-        let callbacks = handlers[name].map { Array($0.values) } ?? []
-        lock.unlock()
-        callbacks.forEach { $0() }
     }
 }
