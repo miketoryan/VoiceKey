@@ -10,6 +10,10 @@ final class AudioService: @unchecked Sendable {
 
     private(set) var isArmed = false
 
+    var isRunning: Bool {
+        isArmed && engine.isRunning
+    }
+
     static func requestPermission() async -> Bool {
         await withCheckedContinuation { continuation in
             AVAudioSession.sharedInstance().requestRecordPermission { granted in

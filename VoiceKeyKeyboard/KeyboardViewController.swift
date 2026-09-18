@@ -7,6 +7,11 @@ final class KeyboardViewController: UIInputViewController {
     private let deleteButton = UIButton(type: .system)
 
     private var observerTokens: [UUID] = []
+    private var currentRequestID: String?
+    private var keyboardVisible = false
+    private var mayAutoInsert = false
+    private var acknowledgementTask: Task<Void, Never>?
+    private var transcriptionTimeoutTask: Task<Void, Never>?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -28,13 +33,26 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        keyboardVisible = true
         refreshUI()
-        if SharedBridge.status == .completed {
-            insertLatestTranscription()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        keyboardVisible = false
+        mayAutoInsert = false
+        super.viewWillDisappear(animated)
+    }
+
+    override func textDidChange(_ textInput: UITextInput?) {
+        super.textDidChange(textInput)
+        if SharedBridge.status == .transcribing {
+            mayAutoInsert = false
         }
     }
 
     deinit {
+        acknowledgementTask?.cancel()
+        transcriptionTimeoutTask?.cancel()
         for token in observerTokens {
             DarwinBus.shared.remove(token)
         }
@@ -91,19 +109,31 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        guard SharedBridge.serviceReady else {
+        if SharedBridge.status == .completed,
+           let requestID = SharedBridge.requestID,
+           SharedBridge.isFreshResponse(for: requestID) {
+            insertLatestTranscription(automatically: false)
+            return
+        }
+
+        guard SharedBridge.isServiceAvailable else {
             statusLabel.text = "Open VoiceKey and start Keyboard Service first."
+            micButton.setTitle(" Start Service in App ", for: .normal)
+            micButton.backgroundColor = .systemGray
             return
         }
 
         switch SharedBridge.status {
         case .recording:
+            mayAutoInsert = true
             DarwinBus.shared.post(SharedBridge.Event.stopRecording)
+            scheduleTranscriptionTimeout(for: currentRequestID ?? SharedBridge.requestID)
+        case .starting:
+            break
         case .transcribing:
             break
         default:
-            SharedBridge.transcribedText = nil
-            DarwinBus.shared.post(SharedBridge.Event.startRecording)
+            startRecordingRequest()
         }
     }
 
@@ -123,7 +153,17 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        guard SharedBridge.serviceReady else {
+        if SharedBridge.status == .completed,
+           let requestID = SharedBridge.requestID,
+           SharedBridge.isFreshResponse(for: requestID),
+           SharedBridge.transcribedText != nil {
+            statusLabel.text = "Transcription ready — tap to insert"
+            micButton.setTitle(" Insert Result ", for: .normal)
+            micButton.backgroundColor = .systemGreen
+            return
+        }
+
+        guard SharedBridge.isServiceAvailable else {
             statusLabel.text = "Open VoiceKey and start Keyboard Service."
             micButton.setTitle(" Start Service in App ", for: .normal)
             micButton.backgroundColor = .systemGray
@@ -131,10 +171,14 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         switch SharedBridge.status {
-        case .idle, .completed:
+        case .idle:
             statusLabel.text = "Ready"
             micButton.setTitle(" 🎙  Speak ", for: .normal)
             micButton.backgroundColor = .systemBlue
+        case .starting:
+            statusLabel.text = "Connecting to VoiceKey…"
+            micButton.setTitle(" Starting… ", for: .normal)
+            micButton.backgroundColor = .systemGray
         case .recording:
             statusLabel.text = "Recording… tap again to finish"
             micButton.setTitle(" ⏹  Stop ", for: .normal)
@@ -143,6 +187,10 @@ final class KeyboardViewController: UIInputViewController {
             statusLabel.text = "ChatGPT is transcribing…"
             micButton.setTitle(" Processing… ", for: .normal)
             micButton.backgroundColor = .systemGray
+        case .completed:
+            SharedBridge.clearResult()
+            SharedBridge.status = .idle
+            refreshUI()
         case .error:
             statusLabel.text = SharedBridge.lastError ?? "Transcription failed."
             micButton.setTitle(" 🎙  Try Again ", for: .normal)
@@ -150,7 +198,72 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    private func insertLatestTranscription() {
+    private func startRecordingRequest() {
+        acknowledgementTask?.cancel()
+        transcriptionTimeoutTask?.cancel()
+
+        let requestID = UUID().uuidString
+        currentRequestID = requestID
+        mayAutoInsert = true
+        SharedBridge.beginRequest(requestID)
+        DarwinBus.shared.post(SharedBridge.Event.startRecording)
+
+        acknowledgementTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(3))
+            } catch {
+                return
+            }
+            guard let self,
+                  self.currentRequestID == requestID,
+                  SharedBridge.requestID == requestID,
+                  SharedBridge.status == .starting else { return }
+
+            self.mayAutoInsert = false
+            SharedBridge.publishError(
+                "VoiceKey did not respond. Open the app and start Keyboard Service again.",
+                requestID: requestID
+            )
+        }
+    }
+
+    private func scheduleTranscriptionTimeout(for requestID: String?) {
+        guard let requestID else { return }
+        transcriptionTimeoutTask?.cancel()
+        transcriptionTimeoutTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(75))
+            } catch {
+                return
+            }
+            guard let self,
+                  self.currentRequestID == requestID,
+                  SharedBridge.requestID == requestID,
+                  SharedBridge.status == .transcribing else { return }
+
+            self.mayAutoInsert = false
+            SharedBridge.publishError(
+                "Transcription timed out. Please try again.",
+                requestID: requestID
+            )
+        }
+    }
+
+    private func insertLatestTranscription(automatically: Bool = true) {
+        let requestID = currentRequestID ?? SharedBridge.requestID
+        guard let requestID,
+              SharedBridge.isFreshResponse(for: requestID) else {
+            refreshUI()
+            return
+        }
+
+        if automatically {
+            guard keyboardVisible, mayAutoInsert, currentRequestID == requestID else {
+                refreshUI()
+                return
+            }
+        }
+
         guard let text = SharedBridge.transcribedText,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             refreshUI()
@@ -158,7 +271,12 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         textDocumentProxy.insertText(text)
-        SharedBridge.transcribedText = nil
+        acknowledgementTask?.cancel()
+        transcriptionTimeoutTask?.cancel()
+        currentRequestID = nil
+        mayAutoInsert = false
+        SharedBridge.requestID = nil
+        SharedBridge.clearResult()
         SharedBridge.status = .idle
         refreshUI()
     }

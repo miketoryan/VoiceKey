@@ -3,16 +3,23 @@ import CoreFoundation
 
 enum SharedBridge {
     static let appGroupID = "group.com.miketoryan.VoiceKey"
+    static let heartbeatValidity: TimeInterval = 8
+    static let resultValidity: TimeInterval = 300
 
     enum Key {
         static let serviceReady = "voicekey.serviceReady"
+        static let heartbeatAt = "voicekey.heartbeatAt"
         static let status = "voicekey.status"
+        static let requestID = "voicekey.requestID"
+        static let responseRequestID = "voicekey.responseRequestID"
         static let transcribedText = "voicekey.transcribedText"
+        static let resultCreatedAt = "voicekey.resultCreatedAt"
         static let lastError = "voicekey.lastError"
     }
 
     enum Status: String {
         case idle
+        case starting
         case recording
         case transcribing
         case completed
@@ -27,7 +34,10 @@ enum SharedBridge {
     }
 
     static var defaults: UserDefaults {
-        UserDefaults(suiteName: appGroupID) ?? .standard
+        guard let defaults = UserDefaults(suiteName: appGroupID) else {
+            preconditionFailure("VoiceKey App Group is not configured: \(appGroupID)")
+        }
+        return defaults
     }
 
     static var serviceReady: Bool {
@@ -36,6 +46,25 @@ enum SharedBridge {
             defaults.set(newValue, forKey: Key.serviceReady)
             DarwinBus.shared.post(Event.stateChanged)
         }
+    }
+
+    static var heartbeatAt: Date? {
+        get {
+            let value = defaults.double(forKey: Key.heartbeatAt)
+            return value > 0 ? Date(timeIntervalSince1970: value) : nil
+        }
+        set {
+            if let newValue {
+                defaults.set(newValue.timeIntervalSince1970, forKey: Key.heartbeatAt)
+            } else {
+                defaults.removeObject(forKey: Key.heartbeatAt)
+            }
+        }
+    }
+
+    static var isServiceAvailable: Bool {
+        guard serviceReady, let heartbeatAt else { return false }
+        return Date().timeIntervalSince(heartbeatAt) <= heartbeatValidity
     }
 
     static var status: Status {
@@ -55,20 +84,81 @@ enum SharedBridge {
         set { defaults.set(newValue, forKey: Key.transcribedText) }
     }
 
+    static var requestID: String? {
+        get { defaults.string(forKey: Key.requestID) }
+        set { defaults.set(newValue, forKey: Key.requestID) }
+    }
+
+    static var responseRequestID: String? {
+        get { defaults.string(forKey: Key.responseRequestID) }
+        set { defaults.set(newValue, forKey: Key.responseRequestID) }
+    }
+
+    static var resultCreatedAt: Date? {
+        get {
+            let value = defaults.double(forKey: Key.resultCreatedAt)
+            return value > 0 ? Date(timeIntervalSince1970: value) : nil
+        }
+        set {
+            if let newValue {
+                defaults.set(newValue.timeIntervalSince1970, forKey: Key.resultCreatedAt)
+            } else {
+                defaults.removeObject(forKey: Key.resultCreatedAt)
+            }
+        }
+    }
+
     static var lastError: String? {
         get { defaults.string(forKey: Key.lastError) }
         set { defaults.set(newValue, forKey: Key.lastError) }
     }
 
-    static func publishTranscription(_ text: String) {
+    static func touchHeartbeat() {
+        heartbeatAt = Date()
+    }
+
+    static func beginRequest(_ id: String) {
+        requestID = id
+        responseRequestID = nil
+        transcribedText = nil
+        resultCreatedAt = nil
+        lastError = nil
+        status = .starting
+    }
+
+    static func publishTranscription(_ text: String, requestID: String) {
         transcribedText = text
+        responseRequestID = requestID
+        resultCreatedAt = Date()
         status = .completed
         DarwinBus.shared.post(Event.transcriptionReady)
     }
 
-    static func publishError(_ message: String) {
+    static func publishError(_ message: String, requestID: String? = nil) {
         lastError = message
+        responseRequestID = requestID
+        resultCreatedAt = Date()
         status = .error
+    }
+
+    static func isFreshResponse(for id: String) -> Bool {
+        guard responseRequestID == id, let resultCreatedAt else { return false }
+        return Date().timeIntervalSince(resultCreatedAt) <= resultValidity
+    }
+
+    static func clearResult() {
+        transcribedText = nil
+        responseRequestID = nil
+        resultCreatedAt = nil
+        lastError = nil
+    }
+
+    static func invalidateService() {
+        serviceReady = false
+        heartbeatAt = nil
+        requestID = nil
+        clearResult()
+        status = .idle
     }
 }
 

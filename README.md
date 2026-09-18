@@ -1,6 +1,6 @@
 # VoiceKey
 
-VoiceKey is an experimental iPhone voice keyboard focused on one job: turn speech into text with ChatGPT/Codex transcription and insert the result into any text field.
+VoiceKey is an experimental, personal-use iPhone voice keyboard focused on one job: turn speech into text with ChatGPT/Codex transcription and insert the result into any text field.
 
 ## Architecture
 
@@ -12,6 +12,8 @@ VoiceKey is an experimental iPhone voice keyboard focused on one job: turn speec
 ## Important limitation
 
 The ChatGPT/Codex transcription endpoint used by this project is an undocumented backend endpoint. It can change or stop working without notice. VoiceKey is therefore experimental and should eventually include a fallback transcription engine.
+
+The current architecture keeps the containing app's audio session active while the keyboard service is available. This is a workaround for the fact that iOS keyboard extensions cannot access the microphone directly. The service stops after 10 minutes of inactivity, and each recording is limited to 2 minutes.
 
 ## Build
 
@@ -29,7 +31,7 @@ The ChatGPT/Codex transcription endpoint used by this project is an undocumented
 1. Open VoiceKey once and tap **Start Keyboard Service**.
 2. Switch to VoiceKey from the globe key in any app.
 3. Tap the microphone to start.
-4. Tap stop to transcribe and insert.
+4. Tap stop to transcribe. The result is inserted automatically only while the same keyboard session remains active; otherwise VoiceKey asks you to tap **Insert Result** so stale text is not inserted into the wrong field.
 5. Use the globe key to return to Apple Keyboard.
 
 ## Status
