@@ -1,12 +1,13 @@
 import AuthenticationServices
 import CryptoKit
+import Combine
 import Foundation
 import Security
 import UIKit
 
 @MainActor
 final class ChatGPTAuthManager: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
-    struct Credential: Codable {
+    struct Credential: Codable, Sendable {
         let accessToken: String
         let refreshToken: String
         let expiresAt: Date
