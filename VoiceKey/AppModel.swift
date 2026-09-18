@@ -15,12 +15,9 @@ final class AppModel: ObservableObject {
     private var observerTokens: [UUID] = []
     private var activeRecordingURL: URL?
     private var activeRequestID: String?
-    private var expiryTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
-    private var recordingTimeoutTask: Task<Void, Never>?
+    private var keyboardExitTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
-
-    private let maximumRecordingDuration: Duration = .seconds(120)
 
     init() {
         let auth = ChatGPTAuthManager()
@@ -43,17 +40,26 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in
                     self?.beginFinishingRecording(
                         expectedRequestID: SharedBridge.requestID,
-                        triggeredByTimeout: false
+                        deactivateMicrophoneAfterCapture: false
                     )
                 }
+            }
+        )
+        observerTokens.append(
+            DarwinBus.shared.observe(SharedBridge.Event.keyboardActivated) { [weak self] in
+                Task { @MainActor in self?.cancelKeyboardExitShutdown() }
+            }
+        )
+        observerTokens.append(
+            DarwinBus.shared.observe(SharedBridge.Event.keyboardDeactivated) { [weak self] in
+                Task { @MainActor in self?.scheduleKeyboardExitShutdown() }
             }
         )
     }
 
     deinit {
-        expiryTask?.cancel()
         heartbeatTask?.cancel()
-        recordingTimeoutTask?.cancel()
+        keyboardExitTask?.cancel()
         transcriptionTask?.cancel()
         for token in observerTokens {
             DarwinBus.shared.remove(token)
@@ -92,6 +98,10 @@ final class AppModel: ObservableObject {
         }
 
         do {
+            transcriptionTask?.cancel()
+            transcriptionTask = nil
+            keyboardExitTask?.cancel()
+            keyboardExitTask = nil
             try audio.arm()
             serviceReady = true
             statusText = "Ready for keyboard dictation"
@@ -102,7 +112,6 @@ final class AppModel: ObservableObject {
             SharedBridge.touchHeartbeat()
             SharedBridge.serviceReady = true
             startHeartbeat()
-            resetExpiryTimer()
         } catch {
             lastError = error.localizedDescription
             SharedBridge.publishError(error.localizedDescription)
@@ -110,12 +119,10 @@ final class AppModel: ObservableObject {
     }
 
     func stopService() {
-        expiryTask?.cancel()
-        expiryTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
-        recordingTimeoutTask?.cancel()
-        recordingTimeoutTask = nil
+        keyboardExitTask?.cancel()
+        keyboardExitTask = nil
         transcriptionTask?.cancel()
         transcriptionTask = nil
 
@@ -149,8 +156,6 @@ final class AppModel: ObservableObject {
             activeRequestID = requestID
             SharedBridge.status = .recording
             statusText = "Recording…"
-            scheduleRecordingTimeout(for: requestID)
-            resetExpiryTimer()
         } catch {
             SharedBridge.publishError(error.localizedDescription, requestID: requestID)
             lastError = error.localizedDescription
@@ -159,16 +164,11 @@ final class AppModel: ObservableObject {
 
     private func finishRecordingFromKeyboard(
         expectedRequestID: String?,
-        triggeredByTimeout: Bool
+        deactivateMicrophoneAfterCapture: Bool
     ) async {
         guard SharedBridge.status == .recording else { return }
         guard let requestID = activeRequestID,
               expectedRequestID == nil || expectedRequestID == requestID else { return }
-
-        if !triggeredByTimeout {
-            recordingTimeoutTask?.cancel()
-        }
-        recordingTimeoutTask = nil
 
         let capturedURL = audio.endCapture() ?? activeRecordingURL
         activeRecordingURL = nil
@@ -180,13 +180,14 @@ final class AppModel: ObservableObject {
         }
 
         SharedBridge.status = .transcribing
-        statusText = triggeredByTimeout ? "Recording limit reached. Transcribing…" : "Transcribing…"
+        statusText = "Transcribing…"
+
+        if deactivateMicrophoneAfterCapture {
+            deactivateMicrophonePreservingResponse()
+        }
 
         defer {
             try? FileManager.default.removeItem(at: url)
-            if serviceReady {
-                resetExpiryTimer()
-            }
         }
 
         do {
@@ -197,7 +198,9 @@ final class AppModel: ObservableObject {
                 language: "zh"
             )
             SharedBridge.publishTranscription(text, requestID: requestID)
-            statusText = "Ready for keyboard dictation"
+            statusText = serviceReady
+                ? "Ready for keyboard dictation"
+                : "Keyboard closed. Transcription is ready."
             signedIn = true
             accountEmail = credential.email
         } catch {
@@ -211,13 +214,13 @@ final class AppModel: ObservableObject {
 
     private func beginFinishingRecording(
         expectedRequestID: String?,
-        triggeredByTimeout: Bool
+        deactivateMicrophoneAfterCapture: Bool
     ) {
         transcriptionTask?.cancel()
         transcriptionTask = Task { [weak self] in
             await self?.finishRecordingFromKeyboard(
                 expectedRequestID: expectedRequestID,
-                triggeredByTimeout: triggeredByTimeout
+                deactivateMicrophoneAfterCapture: deactivateMicrophoneAfterCapture
             )
         }
     }
@@ -241,28 +244,52 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func scheduleRecordingTimeout(for requestID: String) {
-        recordingTimeoutTask?.cancel()
-        recordingTimeoutTask = Task { [weak self, maximumRecordingDuration = self.maximumRecordingDuration] in
+    private func cancelKeyboardExitShutdown() {
+        keyboardExitTask?.cancel()
+        keyboardExitTask = nil
+    }
+
+    private func scheduleKeyboardExitShutdown() {
+        keyboardExitTask?.cancel()
+        keyboardExitTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: maximumRecordingDuration)
+                try await Task.sleep(for: .seconds(10))
             } catch {
                 return
             }
-            self?.beginFinishingRecording(
-                expectedRequestID: requestID,
-                triggeredByTimeout: true
-            )
+            guard let self, !SharedBridge.keyboardActive else { return }
+
+            if SharedBridge.status == .recording {
+                self.beginFinishingRecording(
+                    expectedRequestID: self.activeRequestID,
+                    deactivateMicrophoneAfterCapture: true
+                )
+            } else {
+                self.deactivateMicrophonePreservingResponse()
+            }
         }
     }
 
-    private func resetExpiryTimer() {
-        expiryTask?.cancel()
-        expiryTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(600))
-            guard !Task.isCancelled else { return }
-            guard SharedBridge.status != .recording else { return }
-            self?.stopService()
+    private func deactivateMicrophonePreservingResponse() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        audio.disarm()
+        serviceReady = false
+        SharedBridge.heartbeatAt = nil
+        SharedBridge.serviceReady = false
+
+        switch SharedBridge.status {
+        case .starting, .idle:
+            SharedBridge.requestID = nil
+            SharedBridge.status = .idle
+        case .recording:
+            break
+        case .transcribing:
+            statusText = "Keyboard closed. Finishing transcription…"
+        case .completed:
+            statusText = "Keyboard closed. Transcription is ready."
+        case .error:
+            statusText = "Keyboard service stopped"
         }
     }
 }

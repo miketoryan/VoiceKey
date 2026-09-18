@@ -9,6 +9,7 @@ enum SharedBridge {
     enum Key {
         static let serviceReady = "voicekey.serviceReady"
         static let heartbeatAt = "voicekey.heartbeatAt"
+        static let keyboardActive = "voicekey.keyboardActive"
         static let status = "voicekey.status"
         static let requestID = "voicekey.requestID"
         static let responseRequestID = "voicekey.responseRequestID"
@@ -31,6 +32,8 @@ enum SharedBridge {
         static let stopRecording = "com.miketoryan.VoiceKey.stopRecording"
         static let stateChanged = "com.miketoryan.VoiceKey.stateChanged"
         static let transcriptionReady = "com.miketoryan.VoiceKey.transcriptionReady"
+        static let keyboardActivated = "com.miketoryan.VoiceKey.keyboardActivated"
+        static let keyboardDeactivated = "com.miketoryan.VoiceKey.keyboardDeactivated"
     }
 
     static var defaults: UserDefaults {
@@ -65,6 +68,11 @@ enum SharedBridge {
     static var isServiceAvailable: Bool {
         guard serviceReady, let heartbeatAt else { return false }
         return Date().timeIntervalSince(heartbeatAt) <= heartbeatValidity
+    }
+
+    static var keyboardActive: Bool {
+        get { defaults.bool(forKey: Key.keyboardActive) }
+        set { defaults.set(newValue, forKey: Key.keyboardActive) }
     }
 
     static var status: Status {
@@ -115,6 +123,11 @@ enum SharedBridge {
 
     static func touchHeartbeat() {
         heartbeatAt = Date()
+    }
+
+    static func publishKeyboardActive(_ active: Bool) {
+        keyboardActive = active
+        DarwinBus.shared.post(active ? Event.keyboardActivated : Event.keyboardDeactivated)
     }
 
     static func beginRequest(_ id: String) {

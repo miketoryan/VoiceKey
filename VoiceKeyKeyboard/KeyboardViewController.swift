@@ -34,11 +34,12 @@ final class KeyboardViewController: UIInputViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         keyboardVisible = true
+        SharedBridge.publishKeyboardActive(true)
         refreshUI()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
-        keyboardVisible = false
+        publishKeyboardInactiveIfNeeded()
         mayAutoInsert = false
         super.viewWillDisappear(animated)
     }
@@ -138,6 +139,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func nextKeyboard() {
+        publishKeyboardInactiveIfNeeded()
         advanceToNextInputMode()
     }
 
@@ -279,5 +281,11 @@ final class KeyboardViewController: UIInputViewController {
         SharedBridge.clearResult()
         SharedBridge.status = .idle
         refreshUI()
+    }
+
+    private func publishKeyboardInactiveIfNeeded() {
+        guard keyboardVisible else { return }
+        keyboardVisible = false
+        SharedBridge.publishKeyboardActive(false)
     }
 }

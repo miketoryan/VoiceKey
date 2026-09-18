@@ -59,7 +59,7 @@ struct ContentView: View {
 
                 Section("Privacy & limitations") {
                     Text("While Keyboard Service is active, VoiceKey keeps an audio session alive so iOS can let the main app record on behalf of the keyboard. iOS will show the microphone privacy indicator.")
-                    Text("The service automatically stops after 10 minutes without dictation.")
+                    Text("VoiceKey closes the background microphone 10 seconds after its keyboard is dismissed or you switch to another keyboard.")
                     Text("The current ChatGPT/Codex transcription endpoint is undocumented and may change.")
                 }
 

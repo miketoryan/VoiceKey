@@ -13,7 +13,7 @@ VoiceKey is an experimental, personal-use iPhone voice keyboard focused on one j
 
 The ChatGPT/Codex transcription endpoint used by this project is an undocumented backend endpoint. It can change or stop working without notice. VoiceKey is therefore experimental and should eventually include a fallback transcription engine.
 
-The current architecture keeps the containing app's audio session active while the keyboard service is available. This is a workaround for the fact that iOS keyboard extensions cannot access the microphone directly. The service stops after 10 minutes of inactivity, and each recording is limited to 2 minutes.
+The current architecture keeps the containing app's audio session active while the keyboard service is available. This is a workaround for the fact that iOS keyboard extensions cannot access the microphone directly. Recordings have no fixed duration limit. When the VoiceKey keyboard is dismissed or the user switches to another keyboard, the microphone closes after a 10-second grace period. Returning to VoiceKey during that grace period cancels the shutdown.
 
 ## Build
 
