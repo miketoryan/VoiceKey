@@ -89,9 +89,9 @@ final class AppModel: ObservableObject {
             keyboardMonitorTask?.cancel()
             keyboardMonitorTask = nil
 
-            try audio.arm()
+            try audio.enterStandby()
             serviceReady = true
-            statusText = "Ready for keyboard dictation"
+            statusText = "Waiting for VoiceKey keyboard"
             activeRecordingURL = nil
             activeRequestID = nil
             bridgeStatus = .idle
@@ -99,7 +99,6 @@ final class AppModel: ObservableObject {
             lastKeyboardHeartbeat = nil
             keyboardHasConnected = false
             markStateChanged()
-            startKeyboardMonitor()
         } catch {
             publishError(error.localizedDescription)
         }
@@ -132,23 +131,14 @@ final class AppModel: ObservableObject {
             break
 
         case .heartbeat:
-            if serviceReady {
-                lastKeyboardHeartbeat = Date()
-                keyboardHasConnected = true
-            }
+            activateMicrophoneForKeyboardIfNeeded()
 
         case .startRecording:
-            if serviceReady {
-                lastKeyboardHeartbeat = Date()
-                keyboardHasConnected = true
-            }
+            activateMicrophoneForKeyboardIfNeeded()
             startRecordingFromKeyboard(requestID: request.requestID)
 
         case .stopRecording:
-            if serviceReady {
-                lastKeyboardHeartbeat = Date()
-                keyboardHasConnected = true
-            }
+            activateMicrophoneForKeyboardIfNeeded()
             beginFinishingRecording(
                 expectedRequestID: request.requestID,
                 deactivateMicrophoneAfterCapture: false
@@ -159,6 +149,26 @@ final class AppModel: ObservableObject {
         }
 
         return currentBridgeState()
+    }
+
+    private func activateMicrophoneForKeyboardIfNeeded() {
+        guard serviceReady else { return }
+
+        lastKeyboardHeartbeat = Date()
+        keyboardHasConnected = true
+
+        guard !audio.isRunning else { return }
+
+        do {
+            try audio.arm()
+            statusText = "Ready for keyboard dictation"
+            lastError = nil
+            bridgeError = nil
+            markStateChanged()
+            startKeyboardMonitor()
+        } catch {
+            publishError(error.localizedDescription)
+        }
     }
 
     private func startRecordingFromKeyboard(requestID: String?) {
@@ -233,7 +243,7 @@ final class AppModel: ObservableObject {
             resultCreatedAt = Date()
             bridgeError = nil
             bridgeStatus = .completed
-            statusText = serviceReady
+            statusText = audio.isRunning
                 ? "Ready for keyboard dictation"
                 : "Keyboard closed. Transcription is ready."
             signedIn = true
@@ -271,10 +281,7 @@ final class AppModel: ObservableObject {
                 }
 
                 guard let self, self.serviceReady else { return }
-                guard self.audio.isRunning else {
-                    self.stopService()
-                    return
-                }
+                guard self.audio.isRunning else { return }
                 guard self.keyboardHasConnected,
                       let heartbeat = self.lastKeyboardHeartbeat,
                       Date().timeIntervalSince(heartbeat) >= LocalBridge.keyboardExitGracePeriod else {
@@ -297,8 +304,13 @@ final class AppModel: ObservableObject {
     private func deactivateMicrophonePreservingResponse() {
         keyboardMonitorTask?.cancel()
         keyboardMonitorTask = nil
-        audio.disarm()
-        serviceReady = false
+        do {
+            try audio.enterStandby()
+        } catch {
+            publishError(error.localizedDescription)
+            stopService()
+            return
+        }
         lastKeyboardHeartbeat = nil
         keyboardHasConnected = false
         markStateChanged()
@@ -307,7 +319,7 @@ final class AppModel: ObservableObject {
         case .starting, .idle:
             activeRequestID = nil
             bridgeStatus = .idle
-            statusText = "Keyboard service stopped"
+            statusText = "Waiting for VoiceKey keyboard"
         case .recording:
             break
         case .transcribing:
@@ -315,7 +327,7 @@ final class AppModel: ObservableObject {
         case .completed:
             statusText = "Keyboard closed. Transcription is ready."
         case .error:
-            statusText = "Keyboard service stopped"
+            statusText = "Waiting for VoiceKey keyboard"
         }
     }
 
@@ -327,7 +339,9 @@ final class AppModel: ObservableObject {
             bridgeStatus = .idle
         }
         if serviceReady {
-            statusText = "Ready for keyboard dictation"
+            statusText = audio.isRunning
+                ? "Ready for keyboard dictation"
+                : "Waiting for VoiceKey keyboard"
         }
         markStateChanged()
     }
