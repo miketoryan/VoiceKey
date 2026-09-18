@@ -27,23 +27,22 @@ final class OAuthCallbackServer {
                 connection.send(
                     content: response.data(using: .utf8),
                     contentContext: .finalMessage,
-                    isComplete: true
-                ) { _ in
-                    connection.cancel()
-                }
+                    isComplete: true,
+                    completion: .contentProcessed { _ in
+                        connection.cancel()
+                    }
+                )
             }
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            var resumed = false
             listener.stateUpdateHandler = { state in
-                guard !resumed else { return }
                 switch state {
                 case .ready:
-                    resumed = true
+                    listener.stateUpdateHandler = nil
                     continuation.resume(returning: listener)
                 case .failed(let error):
-                    resumed = true
+                    listener.stateUpdateHandler = nil
                     continuation.resume(throwing: error)
                 default:
                     break
