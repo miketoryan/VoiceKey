@@ -5,18 +5,26 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published private(set) var signedIn: Bool
     @Published private(set) var accountEmail: String?
-    @Published private(set) var serviceReady: Bool
+    @Published private(set) var serviceReady = false
     @Published private(set) var statusText = "Idle"
     @Published var lastError: String?
 
     private let auth: ChatGPTAuthManager
     private let audio = AudioService()
     private let transcriber = ChatGPTTranscriptionService()
-    private var observerTokens: [UUID] = []
+    private let localBridge = LocalBridgeServer()
+    private let serverID = UUID().uuidString
+
+    private var stateRevision: UInt64 = 0
     private var activeRecordingURL: URL?
     private var activeRequestID: String?
-    private var heartbeatTask: Task<Void, Never>?
-    private var keyboardExitTask: Task<Void, Never>?
+    private var bridgeStatus: BridgeStatus = .idle
+    private var responseText: String?
+    private var resultCreatedAt: Date?
+    private var bridgeError: String?
+    private var lastKeyboardHeartbeat: Date?
+    private var keyboardHasConnected = false
+    private var keyboardMonitorTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
 
     init() {
@@ -24,46 +32,24 @@ final class AppModel: ObservableObject {
         self.auth = auth
         self.signedIn = auth.isSignedIn
         self.accountEmail = auth.credential?.email
-        self.serviceReady = SharedBridge.serviceReady
 
-        // A fresh process must not claim readiness until its audio session is armed.
-        SharedBridge.invalidateService()
-        self.serviceReady = false
-
-        observerTokens.append(
-            DarwinBus.shared.observe(SharedBridge.Event.startRecording) { [weak self] in
-                Task { @MainActor in self?.startRecordingFromKeyboard() }
-            }
-        )
-        observerTokens.append(
-            DarwinBus.shared.observe(SharedBridge.Event.stopRecording) { [weak self] in
-                Task { @MainActor in
-                    self?.beginFinishingRecording(
-                        expectedRequestID: SharedBridge.requestID,
-                        deactivateMicrophoneAfterCapture: false
-                    )
+        do {
+            try localBridge.start { [weak self] request in
+                guard let self else {
+                    return BridgeState.unavailable("VoiceKey is not running.")
                 }
+                return await self.handleBridgeRequest(request)
             }
-        )
-        observerTokens.append(
-            DarwinBus.shared.observe(SharedBridge.Event.keyboardActivated) { [weak self] in
-                Task { @MainActor in self?.cancelKeyboardExitShutdown() }
-            }
-        )
-        observerTokens.append(
-            DarwinBus.shared.observe(SharedBridge.Event.keyboardDeactivated) { [weak self] in
-                Task { @MainActor in self?.scheduleKeyboardExitShutdown() }
-            }
-        )
+        } catch {
+            lastError = error.localizedDescription
+            statusText = "Local keyboard connection failed"
+        }
     }
 
     deinit {
-        heartbeatTask?.cancel()
-        keyboardExitTask?.cancel()
+        keyboardMonitorTask?.cancel()
         transcriptionTask?.cancel()
-        for token in observerTokens {
-            DarwinBus.shared.remove(token)
-        }
+        localBridge.stop()
     }
 
     func signIn() async {
@@ -100,29 +86,28 @@ final class AppModel: ObservableObject {
         do {
             transcriptionTask?.cancel()
             transcriptionTask = nil
-            keyboardExitTask?.cancel()
-            keyboardExitTask = nil
+            keyboardMonitorTask?.cancel()
+            keyboardMonitorTask = nil
+
             try audio.arm()
             serviceReady = true
             statusText = "Ready for keyboard dictation"
-            SharedBridge.lastError = nil
-            SharedBridge.clearResult()
-            SharedBridge.requestID = nil
-            SharedBridge.status = .idle
-            SharedBridge.touchHeartbeat()
-            SharedBridge.serviceReady = true
-            startHeartbeat()
+            activeRecordingURL = nil
+            activeRequestID = nil
+            bridgeStatus = .idle
+            clearResult()
+            lastKeyboardHeartbeat = nil
+            keyboardHasConnected = false
+            markStateChanged()
+            startKeyboardMonitor()
         } catch {
-            lastError = error.localizedDescription
-            SharedBridge.publishError(error.localizedDescription)
+            publishError(error.localizedDescription)
         }
     }
 
     func stopService() {
-        heartbeatTask?.cancel()
-        heartbeatTask = nil
-        keyboardExitTask?.cancel()
-        keyboardExitTask = nil
+        keyboardMonitorTask?.cancel()
+        keyboardMonitorTask = nil
         transcriptionTask?.cancel()
         transcriptionTask = nil
 
@@ -134,31 +119,78 @@ final class AppModel: ObservableObject {
         audio.disarm()
         serviceReady = false
         statusText = "Idle"
-        SharedBridge.invalidateService()
+        bridgeStatus = .idle
+        clearResult()
+        lastKeyboardHeartbeat = nil
+        keyboardHasConnected = false
+        markStateChanged()
     }
 
-    private func startRecordingFromKeyboard() {
-        guard serviceReady, audio.isRunning, SharedBridge.isServiceAvailable else {
-            SharedBridge.publishError(
-                "Open VoiceKey and start the keyboard service first.",
-                requestID: SharedBridge.requestID
+    private func handleBridgeRequest(_ request: BridgeRequest) async -> BridgeState {
+        switch request.action {
+        case .state:
+            break
+
+        case .heartbeat:
+            if serviceReady {
+                lastKeyboardHeartbeat = Date()
+                keyboardHasConnected = true
+            }
+
+        case .startRecording:
+            if serviceReady {
+                lastKeyboardHeartbeat = Date()
+                keyboardHasConnected = true
+            }
+            startRecordingFromKeyboard(requestID: request.requestID)
+
+        case .stopRecording:
+            if serviceReady {
+                lastKeyboardHeartbeat = Date()
+                keyboardHasConnected = true
+            }
+            beginFinishingRecording(
+                expectedRequestID: request.requestID,
+                deactivateMicrophoneAfterCapture: false
+            )
+
+        case .acknowledgeResult:
+            acknowledgeResult(requestID: request.requestID)
+        }
+
+        return currentBridgeState()
+    }
+
+    private func startRecordingFromKeyboard(requestID: String?) {
+        guard serviceReady, audio.isRunning else {
+            publishError(
+                "Open VoiceKey and start Keyboard Service first.",
+                requestID: requestID
             )
             return
         }
-        guard SharedBridge.status == .starting,
-              let requestID = SharedBridge.requestID else { return }
-        guard SharedBridge.status != .recording else { return }
+        guard let requestID, !requestID.isEmpty else {
+            publishError("VoiceKey received an invalid recording request.")
+            return
+        }
+        guard bridgeStatus != .recording,
+              bridgeStatus != .starting,
+              bridgeStatus != .transcribing else {
+            return
+        }
+
+        bridgeStatus = .starting
+        activeRequestID = requestID
+        clearResult(keepingRequest: true)
+        markStateChanged()
 
         do {
-            SharedBridge.transcribedText = nil
-            SharedBridge.lastError = nil
             activeRecordingURL = try audio.beginCapture()
-            activeRequestID = requestID
-            SharedBridge.status = .recording
+            bridgeStatus = .recording
             statusText = "Recording…"
+            markStateChanged()
         } catch {
-            SharedBridge.publishError(error.localizedDescription, requestID: requestID)
-            lastError = error.localizedDescription
+            publishError(error.localizedDescription, requestID: requestID)
         }
     }
 
@@ -166,21 +198,21 @@ final class AppModel: ObservableObject {
         expectedRequestID: String?,
         deactivateMicrophoneAfterCapture: Bool
     ) async {
-        guard SharedBridge.status == .recording else { return }
+        guard bridgeStatus == .recording else { return }
         guard let requestID = activeRequestID,
               expectedRequestID == nil || expectedRequestID == requestID else { return }
 
         let capturedURL = audio.endCapture() ?? activeRecordingURL
         activeRecordingURL = nil
-        activeRequestID = nil
 
         guard let url = capturedURL else {
-            SharedBridge.publishError("No recording was captured.", requestID: requestID)
+            publishError("No recording was captured.", requestID: requestID)
             return
         }
 
-        SharedBridge.status = .transcribing
+        bridgeStatus = .transcribing
         statusText = "Transcribing…"
+        markStateChanged()
 
         if deactivateMicrophoneAfterCapture {
             deactivateMicrophonePreservingResponse()
@@ -197,17 +229,19 @@ final class AppModel: ObservableObject {
                 credential: credential,
                 language: "zh"
             )
-            SharedBridge.publishTranscription(text, requestID: requestID)
+            responseText = text
+            resultCreatedAt = Date()
+            bridgeError = nil
+            bridgeStatus = .completed
             statusText = serviceReady
                 ? "Ready for keyboard dictation"
                 : "Keyboard closed. Transcription is ready."
             signedIn = true
             accountEmail = credential.email
+            markStateChanged()
         } catch {
             guard !Task.isCancelled else { return }
-            let message = error.localizedDescription
-            SharedBridge.publishError(message, requestID: requestID)
-            lastError = message
+            publishError(error.localizedDescription, requestID: requestID)
             statusText = "Transcription failed"
         }
     }
@@ -216,6 +250,7 @@ final class AppModel: ObservableObject {
         expectedRequestID: String?,
         deactivateMicrophoneAfterCapture: Bool
     ) {
+        guard bridgeStatus == .recording else { return }
         transcriptionTask?.cancel()
         transcriptionTask = Task { [weak self] in
             await self?.finishRecordingFromKeyboard(
@@ -225,63 +260,54 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func startHeartbeat() {
-        heartbeatTask?.cancel()
-        heartbeatTask = Task { [weak self] in
+    private func startKeyboardMonitor() {
+        keyboardMonitorTask?.cancel()
+        keyboardMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(2))
+                    try await Task.sleep(for: .seconds(1))
                 } catch {
                     return
                 }
+
                 guard let self, self.serviceReady else { return }
                 guard self.audio.isRunning else {
                     self.stopService()
                     return
                 }
-                SharedBridge.touchHeartbeat()
-            }
-        }
-    }
+                guard self.keyboardHasConnected,
+                      let heartbeat = self.lastKeyboardHeartbeat,
+                      Date().timeIntervalSince(heartbeat) >= LocalBridge.keyboardExitGracePeriod else {
+                    continue
+                }
 
-    private func cancelKeyboardExitShutdown() {
-        keyboardExitTask?.cancel()
-        keyboardExitTask = nil
-    }
-
-    private func scheduleKeyboardExitShutdown() {
-        keyboardExitTask?.cancel()
-        keyboardExitTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(10))
-            } catch {
+                if self.bridgeStatus == .recording {
+                    self.beginFinishingRecording(
+                        expectedRequestID: self.activeRequestID,
+                        deactivateMicrophoneAfterCapture: true
+                    )
+                } else {
+                    self.deactivateMicrophonePreservingResponse()
+                }
                 return
-            }
-            guard let self, !SharedBridge.keyboardActive else { return }
-
-            if SharedBridge.status == .recording {
-                self.beginFinishingRecording(
-                    expectedRequestID: self.activeRequestID,
-                    deactivateMicrophoneAfterCapture: true
-                )
-            } else {
-                self.deactivateMicrophonePreservingResponse()
             }
         }
     }
 
     private func deactivateMicrophonePreservingResponse() {
-        heartbeatTask?.cancel()
-        heartbeatTask = nil
+        keyboardMonitorTask?.cancel()
+        keyboardMonitorTask = nil
         audio.disarm()
         serviceReady = false
-        SharedBridge.heartbeatAt = nil
-        SharedBridge.serviceReady = false
+        lastKeyboardHeartbeat = nil
+        keyboardHasConnected = false
+        markStateChanged()
 
-        switch SharedBridge.status {
+        switch bridgeStatus {
         case .starting, .idle:
-            SharedBridge.requestID = nil
-            SharedBridge.status = .idle
+            activeRequestID = nil
+            bridgeStatus = .idle
+            statusText = "Keyboard service stopped"
         case .recording:
             break
         case .transcribing:
@@ -291,5 +317,56 @@ final class AppModel: ObservableObject {
         case .error:
             statusText = "Keyboard service stopped"
         }
+    }
+
+    private func acknowledgeResult(requestID: String?) {
+        guard requestID == nil || requestID == activeRequestID else { return }
+        activeRequestID = nil
+        clearResult()
+        if bridgeStatus == .completed || bridgeStatus == .error {
+            bridgeStatus = .idle
+        }
+        if serviceReady {
+            statusText = "Ready for keyboard dictation"
+        }
+        markStateChanged()
+    }
+
+    private func clearResult(keepingRequest: Bool = false) {
+        responseText = nil
+        resultCreatedAt = nil
+        bridgeError = nil
+        if !keepingRequest {
+            activeRequestID = nil
+        }
+    }
+
+    private func publishError(_ message: String, requestID: String? = nil) {
+        if let requestID {
+            activeRequestID = requestID
+        }
+        responseText = nil
+        resultCreatedAt = Date()
+        bridgeError = message
+        bridgeStatus = .error
+        lastError = message
+        markStateChanged()
+    }
+
+    private func currentBridgeState() -> BridgeState {
+        BridgeState(
+            serverID: serverID,
+            revision: stateRevision,
+            serviceReady: serviceReady && audio.isRunning,
+            status: bridgeStatus,
+            requestID: activeRequestID,
+            transcribedText: responseText,
+            resultCreatedAt: resultCreatedAt,
+            lastError: bridgeError
+        )
+    }
+
+    private func markStateChanged() {
+        stateRevision &+= 1
     }
 }

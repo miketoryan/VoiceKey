@@ -8,8 +8,13 @@ struct ChatGPTTranscriptionService {
         credential: ChatGPTAuthManager.Credential,
         language: String = "zh"
     ) async throws -> String {
-        let audioData = try Data(contentsOf: audioURL)
         let boundary = "VoiceKey-\(UUID().uuidString)"
+        let multipartURL = try makeMultipartBodyFile(
+            audioURL: audioURL,
+            language: language,
+            boundary: boundary
+        )
+        defer { try? FileManager.default.removeItem(at: multipartURL) }
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -20,24 +25,9 @@ struct ChatGPTTranscriptionService {
             request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 60
+        request.timeoutInterval = 600
 
-        var body = Data()
-        body.appendMultipart(
-            name: "file",
-            filename: audioURL.lastPathComponent,
-            mimeType: "audio/wav",
-            data: audioData,
-            boundary: boundary
-        )
-        body.appendMultipart(
-            name: "language",
-            value: language,
-            boundary: boundary
-        )
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: multipartURL)
         guard let http = response as? HTTPURLResponse else {
             throw TranscriptionError.invalidResponse
         }
@@ -63,6 +53,49 @@ struct ChatGPTTranscriptionService {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func makeMultipartBodyFile(
+        audioURL: URL,
+        language: String,
+        boundary: String
+    ) throws -> URL {
+        let bodyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voicekey-upload-\(UUID().uuidString)")
+            .appendingPathExtension("multipart")
+
+        guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        do {
+            let output = try FileHandle(forWritingTo: bodyURL)
+            defer { try? output.close() }
+
+            try output.write(contentsOf: Data(
+                ("--\(boundary)\r\n" +
+                 "Content-Disposition: form-data; name=\"file\"; filename=\"\(audioURL.lastPathComponent)\"\r\n" +
+                 "Content-Type: audio/wav\r\n\r\n").utf8
+            ))
+
+            let input = try FileHandle(forReadingFrom: audioURL)
+            defer { try? input.close() }
+            while let chunk = try input.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                try output.write(contentsOf: chunk)
+            }
+
+            try output.write(contentsOf: Data(
+                ("\r\n--\(boundary)\r\n" +
+                 "Content-Disposition: form-data; name=\"language\"\r\n\r\n" +
+                 "\(language)\r\n" +
+                 "--\(boundary)--\r\n").utf8
+            ))
+        } catch {
+            try? FileManager.default.removeItem(at: bodyURL)
+            throw error
+        }
+
+        return bodyURL
+    }
+
     enum TranscriptionError: LocalizedError {
         case invalidResponse
         case authenticationExpired
@@ -80,28 +113,5 @@ struct ChatGPTTranscriptionService {
             case .noText: "No speech was recognized."
             }
         }
-    }
-}
-
-private extension Data {
-    mutating func appendMultipart(
-        name: String,
-        filename: String,
-        mimeType: String,
-        data: Data,
-        boundary: String
-    ) {
-        append("--\(boundary)\r\n".data(using: .utf8)!)
-        append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
-        append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
-        append(data)
-        append("\r\n".data(using: .utf8)!)
-    }
-
-    mutating func appendMultipart(name: String, value: String, boundary: String) {
-        append("--\(boundary)\r\n".data(using: .utf8)!)
-        append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
-        append(value.data(using: .utf8)!)
-        append("\r\n".data(using: .utf8)!)
     }
 }

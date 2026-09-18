@@ -5,58 +5,45 @@ final class KeyboardViewController: UIInputViewController {
     private let micButton = UIButton(type: .system)
     private let globeButton = UIButton(type: .system)
     private let deleteButton = UIButton(type: .system)
+    private let bridge = LocalBridgeClient()
 
-    private var observerTokens: [UUID] = []
+    private var latestState = BridgeState.unavailable()
     private var currentRequestID: String?
     private var keyboardVisible = false
     private var mayAutoInsert = false
-    private var acknowledgementTask: Task<Void, Never>?
-    private var transcriptionTimeoutTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    private var pollingTask: Task<Void, Never>?
+    private var commandTask: Task<Void, Never>?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         configureUI()
-
-        observerTokens.append(
-            DarwinBus.shared.observe(SharedBridge.Event.stateChanged) { [weak self] in
-                DispatchQueue.main.async { self?.refreshUI() }
-            }
-        )
-        observerTokens.append(
-            DarwinBus.shared.observe(SharedBridge.Event.transcriptionReady) { [weak self] in
-                DispatchQueue.main.async { self?.insertLatestTranscription() }
-            }
-        )
-
         refreshUI()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         keyboardVisible = true
-        SharedBridge.publishKeyboardActive(true)
-        refreshUI()
+        startBridgeTasks()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
-        publishKeyboardInactiveIfNeeded()
+        keyboardVisible = false
         mayAutoInsert = false
+        stopBridgeTasks()
         super.viewWillDisappear(animated)
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
-        if SharedBridge.status == .transcribing {
+        if latestState.status == .transcribing {
             mayAutoInsert = false
         }
     }
 
     deinit {
-        acknowledgementTask?.cancel()
-        transcriptionTimeoutTask?.cancel()
-        for token in observerTokens {
-            DarwinBus.shared.remove(token)
-        }
+        stopBridgeTasks()
+        commandTask?.cancel()
     }
 
     private func configureUI() {
@@ -110,28 +97,25 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        if SharedBridge.status == .completed,
-           let requestID = SharedBridge.requestID,
-           SharedBridge.isFreshResponse(for: requestID) {
+        if latestState.status == .completed,
+           let requestID = latestState.requestID,
+           latestState.isFreshResponse(for: requestID) {
             insertLatestTranscription(automatically: false)
             return
         }
 
-        guard SharedBridge.isServiceAvailable else {
+        guard latestState.serviceReady else {
             statusLabel.text = "Open VoiceKey and start Keyboard Service first."
             micButton.setTitle(" Start Service in App ", for: .normal)
             micButton.backgroundColor = .systemGray
             return
         }
 
-        switch SharedBridge.status {
+        switch latestState.status {
         case .recording:
             mayAutoInsert = true
-            DarwinBus.shared.post(SharedBridge.Event.stopRecording)
-            scheduleTranscriptionTimeout(for: currentRequestID ?? SharedBridge.requestID)
-        case .starting:
-            break
-        case .transcribing:
+            sendCommand(.stopRecording, requestID: latestState.requestID ?? currentRequestID)
+        case .starting, .transcribing:
             break
         default:
             startRecordingRequest()
@@ -139,12 +123,131 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func nextKeyboard() {
-        publishKeyboardInactiveIfNeeded()
+        keyboardVisible = false
+        mayAutoInsert = false
+        stopBridgeTasks()
         advanceToNextInputMode()
     }
 
     @objc private func deleteBackward() {
         textDocumentProxy.deleteBackward()
+    }
+
+    private func startBridgeTasks() {
+        stopBridgeTasks()
+
+        heartbeatTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.sendHeartbeat()
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: LocalBridge.keyboardHeartbeatInterval)
+                } catch {
+                    return
+                }
+                await self.sendHeartbeat()
+            }
+        }
+
+        pollingTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.fetchState()
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(400))
+                } catch {
+                    return
+                }
+                await self.fetchState()
+            }
+        }
+    }
+
+    private func stopBridgeTasks() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        pollingTask?.cancel()
+        pollingTask = nil
+    }
+
+    private func sendHeartbeat() async {
+        guard keyboardVisible else { return }
+        do {
+            let state = try await bridge.send(.heartbeat)
+            apply(state)
+        } catch {
+            applyConnectionFailure()
+        }
+    }
+
+    private func fetchState() async {
+        guard keyboardVisible else { return }
+        do {
+            let state = try await bridge.fetchState()
+            apply(state)
+        } catch {
+            applyConnectionFailure()
+        }
+    }
+
+    private func sendCommand(_ action: BridgeAction, requestID: String?) {
+        commandTask?.cancel()
+        commandTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let state = try await self.bridge.send(action, requestID: requestID)
+                self.apply(state)
+            } catch {
+                self.latestState = .unavailable(
+                    "VoiceKey did not respond. Open the app and start Keyboard Service again."
+                )
+                self.refreshUI()
+            }
+        }
+    }
+
+    private func startRecordingRequest() {
+        let requestID = UUID().uuidString
+        currentRequestID = requestID
+        mayAutoInsert = true
+        latestState = BridgeState(
+            serverID: latestState.serverID,
+            revision: latestState.revision &+ 1,
+            serviceReady: true,
+            status: .starting,
+            requestID: requestID,
+            transcribedText: nil,
+            resultCreatedAt: nil,
+            lastError: nil
+        )
+        refreshUI()
+        sendCommand(.startRecording, requestID: requestID)
+    }
+
+    private func apply(_ state: BridgeState) {
+        if state.serverID == latestState.serverID,
+           state.revision < latestState.revision {
+            return
+        }
+        latestState = state
+        refreshUI()
+
+        if state.status == .completed {
+            insertLatestTranscription()
+        }
+    }
+
+    private func applyConnectionFailure() {
+        guard latestState.status != .recording,
+              latestState.status != .transcribing else {
+            return
+        }
+        latestState = .unavailable(
+            "Open VoiceKey and start Keyboard Service."
+        )
+        refreshUI()
     }
 
     private func refreshUI() {
@@ -155,24 +258,24 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        if SharedBridge.status == .completed,
-           let requestID = SharedBridge.requestID,
-           SharedBridge.isFreshResponse(for: requestID),
-           SharedBridge.transcribedText != nil {
+        if latestState.status == .completed,
+           let requestID = latestState.requestID,
+           latestState.isFreshResponse(for: requestID),
+           latestState.transcribedText != nil {
             statusLabel.text = "Transcription ready — tap to insert"
             micButton.setTitle(" Insert Result ", for: .normal)
             micButton.backgroundColor = .systemGreen
             return
         }
 
-        guard SharedBridge.isServiceAvailable else {
-            statusLabel.text = "Open VoiceKey and start Keyboard Service."
+        guard latestState.serviceReady else {
+            statusLabel.text = latestState.lastError ?? "Open VoiceKey and start Keyboard Service."
             micButton.setTitle(" Start Service in App ", for: .normal)
             micButton.backgroundColor = .systemGray
             return
         }
 
-        switch SharedBridge.status {
+        switch latestState.status {
         case .idle:
             statusLabel.text = "Ready"
             micButton.setTitle(" 🎙  Speak ", for: .normal)
@@ -190,102 +293,52 @@ final class KeyboardViewController: UIInputViewController {
             micButton.setTitle(" Processing… ", for: .normal)
             micButton.backgroundColor = .systemGray
         case .completed:
-            SharedBridge.clearResult()
-            SharedBridge.status = .idle
-            refreshUI()
+            statusLabel.text = "The transcription result expired."
+            micButton.setTitle(" 🎙  Speak ", for: .normal)
+            micButton.backgroundColor = .systemBlue
         case .error:
-            statusLabel.text = SharedBridge.lastError ?? "Transcription failed."
+            statusLabel.text = latestState.lastError ?? "Transcription failed."
             micButton.setTitle(" 🎙  Try Again ", for: .normal)
             micButton.backgroundColor = .systemOrange
         }
     }
 
-    private func startRecordingRequest() {
-        acknowledgementTask?.cancel()
-        transcriptionTimeoutTask?.cancel()
-
-        let requestID = UUID().uuidString
-        currentRequestID = requestID
-        mayAutoInsert = true
-        SharedBridge.beginRequest(requestID)
-        DarwinBus.shared.post(SharedBridge.Event.startRecording)
-
-        acknowledgementTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(3))
-            } catch {
-                return
-            }
-            guard let self,
-                  self.currentRequestID == requestID,
-                  SharedBridge.requestID == requestID,
-                  SharedBridge.status == .starting else { return }
-
-            self.mayAutoInsert = false
-            SharedBridge.publishError(
-                "VoiceKey did not respond. Open the app and start Keyboard Service again.",
-                requestID: requestID
-            )
-        }
-    }
-
-    private func scheduleTranscriptionTimeout(for requestID: String?) {
-        guard let requestID else { return }
-        transcriptionTimeoutTask?.cancel()
-        transcriptionTimeoutTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(75))
-            } catch {
-                return
-            }
-            guard let self,
-                  self.currentRequestID == requestID,
-                  SharedBridge.requestID == requestID,
-                  SharedBridge.status == .transcribing else { return }
-
-            self.mayAutoInsert = false
-            SharedBridge.publishError(
-                "Transcription timed out. Please try again.",
-                requestID: requestID
-            )
-        }
-    }
-
     private func insertLatestTranscription(automatically: Bool = true) {
-        let requestID = currentRequestID ?? SharedBridge.requestID
-        guard let requestID,
-              SharedBridge.isFreshResponse(for: requestID) else {
+        guard let requestID = latestState.requestID,
+              latestState.isFreshResponse(for: requestID) else {
             refreshUI()
             return
         }
 
         if automatically {
-            guard keyboardVisible, mayAutoInsert, currentRequestID == requestID else {
+            guard keyboardVisible,
+                  mayAutoInsert,
+                  currentRequestID == requestID else {
                 refreshUI()
                 return
             }
         }
 
-        guard let text = SharedBridge.transcribedText,
+        guard let text = latestState.transcribedText,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             refreshUI()
             return
         }
 
         textDocumentProxy.insertText(text)
-        acknowledgementTask?.cancel()
-        transcriptionTimeoutTask?.cancel()
         currentRequestID = nil
         mayAutoInsert = false
-        SharedBridge.requestID = nil
-        SharedBridge.clearResult()
-        SharedBridge.status = .idle
+        latestState = BridgeState(
+            serverID: latestState.serverID,
+            revision: latestState.revision &+ 1,
+            serviceReady: latestState.serviceReady,
+            status: .idle,
+            requestID: nil,
+            transcribedText: nil,
+            resultCreatedAt: nil,
+            lastError: nil
+        )
         refreshUI()
-    }
-
-    private func publishKeyboardInactiveIfNeeded() {
-        guard keyboardVisible else { return }
-        keyboardVisible = false
-        SharedBridge.publishKeyboardActive(false)
+        sendCommand(.acknowledgeResult, requestID: requestID)
     }
 }

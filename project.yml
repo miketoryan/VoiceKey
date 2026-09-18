@@ -21,14 +21,11 @@ targets:
       - path: Shared
     info:
       path: VoiceKey/Info.plist
-    entitlements:
-      path: VoiceKey/VoiceKey.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.miketoryan.VoiceKey
         PRODUCT_NAME: VoiceKey
         INFOPLIST_FILE: VoiceKey/Info.plist
-        CODE_SIGN_ENTITLEMENTS: VoiceKey/VoiceKey.entitlements
         GENERATE_INFOPLIST_FILE: NO
     dependencies:
       - target: VoiceKeyKeyboard
@@ -42,14 +39,11 @@ targets:
       - path: Shared
     info:
       path: VoiceKeyKeyboard/Info.plist
-    entitlements:
-      path: VoiceKeyKeyboard/VoiceKeyKeyboard.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.miketoryan.VoiceKey.Keyboard
         PRODUCT_NAME: VoiceKeyKeyboard
         INFOPLIST_FILE: VoiceKeyKeyboard/Info.plist
-        CODE_SIGN_ENTITLEMENTS: VoiceKeyKeyboard/VoiceKeyKeyboard.entitlements
         GENERATE_INFOPLIST_FILE: NO
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
