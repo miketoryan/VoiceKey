@@ -106,9 +106,12 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         guard latestState.serviceReady else {
-            statusLabel.text = "Open VoiceKey and start Keyboard Service first."
-            micButton.setTitle(" Start Service in App ", for: .normal)
-            micButton.backgroundColor = .systemGray
+            statusLabel.text = "Open VoiceKey and enable Skip App Switching."
+            setMicPresentation(
+                title: "Open VoiceKey",
+                symbol: "mic.slash",
+                backgroundColor: .systemGray
+            )
             return
         }
 
@@ -202,7 +205,7 @@ final class KeyboardViewController: UIInputViewController {
                 self.apply(state)
             } catch {
                 self.latestState = .unavailable(
-                    "VoiceKey did not respond. Open the app and start Keyboard Service again."
+                    "VoiceKey did not respond. Open the app and enable Skip App Switching."
                 )
                 self.refreshUI()
             }
@@ -217,6 +220,7 @@ final class KeyboardViewController: UIInputViewController {
             serverID: latestState.serverID,
             revision: latestState.revision &+ 1,
             serviceReady: true,
+            skipAppSwitchingReady: latestState.skipAppSwitchingReady,
             status: .starting,
             requestID: requestID,
             transcribedText: nil,
@@ -246,7 +250,7 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
         latestState = .unavailable(
-            "Open VoiceKey and start Keyboard Service."
+            "Open VoiceKey and enable Skip App Switching."
         )
         refreshUI()
     }
@@ -254,8 +258,11 @@ final class KeyboardViewController: UIInputViewController {
     private func refreshUI() {
         guard hasFullAccess else {
             statusLabel.text = "Allow Full Access is required."
-            micButton.setTitle(" Enable Full Access ", for: .normal)
-            micButton.backgroundColor = .systemGray
+            setMicPresentation(
+                title: "Enable Full Access",
+                symbol: "mic.slash",
+                backgroundColor: .systemGray
+            )
             return
         }
 
@@ -264,44 +271,81 @@ final class KeyboardViewController: UIInputViewController {
            latestState.isFreshResponse(for: requestID),
            latestState.transcribedText != nil {
             statusLabel.text = "Transcription ready — tap to insert"
-            micButton.setTitle(" Insert Result ", for: .normal)
-            micButton.backgroundColor = .systemGreen
+            setMicPresentation(
+                title: "Insert Result",
+                symbol: "text.badge.checkmark",
+                backgroundColor: .systemGreen
+            )
             return
         }
 
         guard latestState.serviceReady else {
-            statusLabel.text = latestState.lastError ?? "Open VoiceKey and start Keyboard Service."
-            micButton.setTitle(" Start Service in App ", for: .normal)
-            micButton.backgroundColor = .systemGray
+            statusLabel.text = latestState.lastError
+                ?? "Open VoiceKey and enable Skip App Switching."
+            setMicPresentation(
+                title: "Open VoiceKey",
+                symbol: "mic.slash",
+                backgroundColor: .systemGray
+            )
             return
         }
 
         switch latestState.status {
         case .idle:
-            statusLabel.text = "Ready"
-            micButton.setTitle(" 🎙  Speak ", for: .normal)
-            micButton.backgroundColor = .systemBlue
+            statusLabel.text = latestState.skipAppSwitchingReady
+                ? "Ready — no app switching"
+                : "Ready while VoiceKey remains active"
+            setMicPresentation(
+                title: "Speak",
+                symbol: latestState.skipAppSwitchingReady ? "mic.fill" : "mic",
+                backgroundColor: .systemBlue
+            )
         case .starting:
-            statusLabel.text = "Connecting to VoiceKey…"
-            micButton.setTitle(" Starting… ", for: .normal)
-            micButton.backgroundColor = .systemGray
+            statusLabel.text = "Turning on microphone…"
+            setMicPresentation(
+                title: "Starting…",
+                symbol: "mic",
+                backgroundColor: .systemGray
+            )
         case .recording:
             statusLabel.text = "Recording… tap again to finish"
-            micButton.setTitle(" ⏹  Stop ", for: .normal)
-            micButton.backgroundColor = .systemRed
+            setMicPresentation(
+                title: "Stop",
+                symbol: "stop.fill",
+                backgroundColor: .systemRed
+            )
         case .transcribing:
             statusLabel.text = "ChatGPT is transcribing…"
-            micButton.setTitle(" Processing… ", for: .normal)
-            micButton.backgroundColor = .systemGray
+            setMicPresentation(
+                title: "Processing…",
+                symbol: "waveform",
+                backgroundColor: .systemGray
+            )
         case .completed:
             statusLabel.text = "The transcription result expired."
-            micButton.setTitle(" 🎙  Speak ", for: .normal)
-            micButton.backgroundColor = .systemBlue
+            setMicPresentation(
+                title: "Speak",
+                symbol: latestState.skipAppSwitchingReady ? "mic.fill" : "mic",
+                backgroundColor: .systemBlue
+            )
         case .error:
             statusLabel.text = latestState.lastError ?? "Transcription failed."
-            micButton.setTitle(" 🎙  Try Again ", for: .normal)
-            micButton.backgroundColor = .systemOrange
+            setMicPresentation(
+                title: "Try Again",
+                symbol: "mic",
+                backgroundColor: .systemOrange
+            )
         }
+    }
+
+    private func setMicPresentation(
+        title: String,
+        symbol: String?,
+        backgroundColor: UIColor
+    ) {
+        micButton.setTitle("  \(title)  ", for: .normal)
+        micButton.setImage(symbol.flatMap { UIImage(systemName: $0) }, for: .normal)
+        micButton.backgroundColor = backgroundColor
     }
 
     private func insertLatestTranscription(automatically: Bool = true) {
@@ -333,6 +377,7 @@ final class KeyboardViewController: UIInputViewController {
             serverID: latestState.serverID,
             revision: latestState.revision &+ 1,
             serviceReady: latestState.serviceReady,
+            skipAppSwitchingReady: latestState.skipAppSwitchingReady,
             status: .idle,
             requestID: nil,
             transcribedText: nil,
