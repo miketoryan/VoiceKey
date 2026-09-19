@@ -6,8 +6,8 @@ import UIKit
 
 @MainActor
 final class PictureInPictureService: NSObject,
-                                     AVPictureInPictureControllerDelegate,
-                                     AVPictureInPictureSampleBufferPlaybackDelegate {
+                                     @preconcurrency AVPictureInPictureControllerDelegate,
+                                     @preconcurrency AVPictureInPictureSampleBufferPlaybackDelegate {
     let displayLayer = AVSampleBufferDisplayLayer()
 
     var onActiveChanged: (@MainActor (Bool) -> Void)?
