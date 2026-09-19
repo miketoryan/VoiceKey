@@ -2,7 +2,7 @@ import Foundation
 
 enum LocalBridge {
     static let port = 14_556
-    static let protocolVersion = "1"
+    static let protocolVersion = "2"
     static let keyboardHeartbeatInterval: Duration = .seconds(2)
     static let keyboardExitGracePeriod: TimeInterval = 10
     static let resultValidity: TimeInterval = 300
@@ -42,17 +42,41 @@ struct BridgeState: Codable, Sendable {
     let serverID: String?
     let revision: UInt64
     let serviceReady: Bool
+    let skipAppSwitchingReady: Bool
     let status: BridgeStatus
     let requestID: String?
     let transcribedText: String?
     let resultCreatedAt: Date?
     let lastError: String?
 
+    init(
+        serverID: String?,
+        revision: UInt64,
+        serviceReady: Bool,
+        skipAppSwitchingReady: Bool = false,
+        status: BridgeStatus,
+        requestID: String?,
+        transcribedText: String?,
+        resultCreatedAt: Date?,
+        lastError: String?
+    ) {
+        self.serverID = serverID
+        self.revision = revision
+        self.serviceReady = serviceReady
+        self.skipAppSwitchingReady = skipAppSwitchingReady
+        self.status = status
+        self.requestID = requestID
+        self.transcribedText = transcribedText
+        self.resultCreatedAt = resultCreatedAt
+        self.lastError = lastError
+    }
+
     static func unavailable(_ message: String? = nil) -> BridgeState {
         BridgeState(
             serverID: nil,
             revision: 0,
             serviceReady: false,
+            skipAppSwitchingReady: false,
             status: .idle,
             requestID: nil,
             transcribedText: nil,
