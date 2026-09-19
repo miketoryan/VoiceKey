@@ -4,8 +4,9 @@ VoiceKey is an experimental, personal-use iPhone voice keyboard focused on one j
 
 ## Architecture
 
-- **VoiceKey app** — ChatGPT OAuth, microphone permission, background audio session, transcription.
-- **VoiceKeyKeyboard extension** — microphone/start/stop UI and text insertion.
+- **VoiceKey app** — ChatGPT OAuth, microphone permission, Picture in Picture quick-start service, audio capture, and transcription.
+- **VoiceKeyKeyboard extension** — Speak/Stop UI, service status, and text insertion.
+- **Picture in Picture quick start** — keeps the containing app reachable while another app is in front so the keyboard can request recording without an app switch. The microphone stays off until the user taps **Speak**.
 - **Localhost bridge** — the keyboard talks to the app through `127.0.0.1:14556`, avoiding the App Group entitlement that is unavailable to free Apple developer accounts.
 - **ChatGPT/Codex transcription** — currently targets `https://chatgpt.com/backend-api/transcribe`.
 
@@ -13,9 +14,11 @@ VoiceKey is an experimental, personal-use iPhone voice keyboard focused on one j
 
 The ChatGPT/Codex transcription endpoint used by this project is an undocumented backend endpoint. It can change or stop working without notice. VoiceKey is therefore experimental and should eventually include a fallback transcription engine.
 
-The containing app records on behalf of the keyboard because iOS keyboard extensions cannot access the microphone directly. Recordings have no fixed duration limit and are uploaded through a temporary multipart file instead of being copied fully into memory. While visible, the keyboard sends a heartbeat every 2 seconds. When those heartbeats stop because the keyboard was dismissed, switched, or terminated, the app closes the microphone after a 10-second grace period.
+The containing app records on behalf of the keyboard because iOS keyboard extensions cannot access the microphone directly. Recordings have no fixed duration limit and are uploaded through a temporary multipart file instead of being copied fully into memory.
 
-After the microphone closes, VoiceKey attempts to keep its localhost bridge available with a silent background audio loop. On current iOS versions the containing app may still be suspended, so switching back to the VoiceKey keyboard does not always reactivate the microphone. If that happens, reopen VoiceKey and tap **Start Keyboard Service** before recording again. This is a known limitation of the free-account, personal-use build.
+VoiceKey now has a **Skip App Switching** mode based on Picture in Picture. Enable it while VoiceKey is in the foreground, then leave the Picture in Picture window active while using other apps. The keyboard can keep talking to the containing app through the localhost bridge without visibly opening VoiceKey first. The microphone is not armed by keyboard heartbeats: it turns on only after **Speak** is tapped and is turned off immediately after **Stop** before transcription continues.
+
+While visible, the keyboard sends a heartbeat every 2 seconds. If the keyboard disappears during an active recording, VoiceKey finishes the capture after a 10-second grace period. If Picture in Picture is closed or becomes unavailable, VoiceKey falls back to the older silent-background-audio standby. iOS may eventually suspend that fallback, in which case VoiceKey must be reopened. Picture in Picture behavior must still be validated on a real iPhone because the CI simulator cannot reproduce all background lifecycle behavior.
 
 ## Build
 
@@ -32,16 +35,17 @@ For a local Xcode build, install Xcode 26+ and XcodeGen, run `xcodegen generate`
 
 ## Usage
 
-1. Open VoiceKey and tap **Start Keyboard Service** before using the keyboard. If the microphone has already closed after leaving the keyboard, return to VoiceKey and start the service again.
-2. In Settings → General → Keyboard → Keyboards, add VoiceKey and enable **Allow Full Access**. Localhost communication does not work without Full Access.
-3. Switch to VoiceKey from the globe key in any app.
-4. Tap the microphone to start.
-5. Tap stop to transcribe. The result is inserted automatically only while the same keyboard session remains active; otherwise VoiceKey asks you to tap **Insert Result** so stale text is not inserted into the wrong field.
-6. Use the globe key to return to Apple Keyboard. The microphone closes about 10 seconds later. Depending on iOS background suspension, VoiceKey may need to be reopened and started again before the next recording.
+1. Open VoiceKey, sign in, and tap **Start Keyboard Service**.
+2. Tap **Enable Skip App Switching**. Keep the resulting Picture in Picture window active; it may be tucked against the edge of the screen.
+3. In Settings → General → Keyboard → Keyboards, add VoiceKey and enable **Allow Full Access**. Localhost communication does not work without Full Access.
+4. Switch to VoiceKey from the globe key in any app.
+5. A filled microphone means Skip App Switching is active. Tap **Speak** to turn on the microphone and start recording.
+6. Tap **Stop** to close the microphone and begin transcription. The result is inserted automatically only while the same keyboard session remains active; otherwise VoiceKey asks you to tap **Insert Result** so stale text is not inserted into the wrong field.
+7. If the Picture in Picture window is closed and VoiceKey later becomes unreachable, reopen VoiceKey and enable Skip App Switching again.
 
 ## Status
 
-v0.1 — first buildable prototype. The first goal is to validate the end-to-end path on a real iPhone before adding polish, vocabulary correction, VAD, streaming, and fallback ASR.
+v0.1 experimental — the end-to-end path is buildable and the Picture in Picture quick-start architecture is now ready for real-iPhone validation. Next steps include device lifecycle testing, vocabulary correction, VAD, streaming, and fallback ASR.
 
 ## Acknowledgements
 
