@@ -82,6 +82,19 @@ final class AudioService: @unchecked Sendable {
         }
     }
 
+    func enterPictureInPictureStandby() throws {
+        stopCaptureEngine()
+        stopKeepAlive()
+
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(
+            .playback,
+            mode: .default,
+            options: [.mixWithOthers]
+        )
+        try session.setActive(true)
+    }
+
     func beginCapture() throws -> URL {
         guard isArmed, engine.isRunning else { throw AudioError.notArmed }
 
